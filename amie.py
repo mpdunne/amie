@@ -13,9 +13,16 @@ init(autoreset=True)
 ##########
 # Config #
 ##########
+
+# OpenAI stuff
 load_dotenv()
 OpenAI.api_key = os.getenv("OPENAI_API_KEY")
-VOCAB_CSV = "vocab.csv"
+
+# Directory of the script itself
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Paths relative to the script
+VOCAB_CSV = os.path.join(BASE_DIR, 'vocab.csv')
 
 #############
 # Vocab I/O #
@@ -71,9 +78,9 @@ Focus purely on helping me practice these words effectively. Keep your questions
     # Start conversation loop
     while True:
         response = client.chat.completions.create(model="gpt-4o",
-        messages=messages)x
+        messages=messages)
         reply = response.choices[0].message.content
-        print(f"\n{Fore.CYAN}Amie: {reply}{Style.RESET_ALL}")
+        print(f"\n{Fore.MAGENTA}Amie: {reply}{Style.RESET_ALL}")
 
         user_input = input("\nYou: ")
         if user_input.lower().strip() in ('/exit', '/quit', '/save'):
