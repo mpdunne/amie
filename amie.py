@@ -1,28 +1,26 @@
-import pandas as pd
 import os
 import re
+import pandas as pd
 
 from dotenv import load_dotenv
-
 from openai import OpenAI
-client = OpenAI()
-
 from colorama import Fore, Style, init
+
 init(autoreset=True)
 
 ##########
 # Config #
 ##########
 
-# OpenAI stuff
 load_dotenv()
 OpenAI.api_key = os.getenv("OPENAI_API_KEY")
 
-# Directory of the script itself
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(BASE_DIR, 'data')
+VOCAB_CSV = os.path.join(DATA_DIR, 'vocab.csv')
+MEMORIES_FILE = os.path.join(DATA_DIR, 'memories.txt')
 
-# Paths relative to the script
-VOCAB_CSV = os.path.join(BASE_DIR, 'vocab.csv')
+client = OpenAI()
 
 #############
 # Vocab I/O #
@@ -36,99 +34,208 @@ def load_vocab(csv_file):
 def save_vocab(df, csv_file):
     df.to_csv(csv_file, index=False)
 
+####################
+# Utility Functions #
+####################
+
+def amie_says(text):
+    print(f"\n{Fore.MAGENTA}Amie : {text}{Style.RESET_ALL}")
+
+def save_memory(summary):
+    with open(MEMORIES_FILE, "a", encoding="utf-8") as f:
+        f.write(summary.strip() + "\n\n")
+
+def load_memories():
+    if not os.path.exists(MEMORIES_FILE):
+        return ""
+    with open(MEMORIES_FILE, encoding="utf-8") as f:
+        return f.read()
+
 ###################
-# Chatbot session #
+# Chatbot sessions #
 ###################
-    
-def run_vocab_chat(df, num_words=10):
-    # Select low-mastery words
+
+def run_vocab_chat():
+    amie_says("Bienvenue en mode vocabulaire !")
+
+    df = load_vocab(VOCAB_CSV)
+
     low_mastery = df[df['Mastery Score'] <= 7]
-    session_words = low_mastery.sample(n=min(num_words, len(low_mastery)))['Entry'].tolist()
-
-    #print("Words for this session:", session_words)
-
-    # Initial GPT prompt
+    session_words = low_mastery.sample(n=min(10, len(low_mastery)))['Entry'].tolist()
     vocab_text = ', '.join(session_words)
+
     intro_prompt = f"""
-You are my French tutor. Your name is Amie.
+Tu es Amie, ma tutrice de français très sympathique. 
+Tu m'aides à pratiquer ce vocabulaire : {vocab_text}
 
-You have a list of words for me to practice: {vocab_text}
+Tu dois me tester sur ces mots un par un. Parle toujours en français.
 
-Your task is to test me on these words, one by one. You should speak to me entirely in French.
+Pour chaque mot :
+1. Demande-moi de l'expliquer, de le traduire ou de l'utiliser dans une phrase.
+2. Corrige-moi et explique si besoin.
+3. Donne des exemples si je bloque.
+4. Passe au mot suivant si je réussis.
 
-For each word:
-1. Ask me to explain or translate it, or to use it in a French sentence.
-2. Check my answer and explain if necessary.
-3. Provide correct examples and additional explanations if I struggle.
+IMPORTANT :
+- Je peux écrire des mots entre [crochets] si je ne les connais pas (ne les utilise pas toi-même).
+- Si j'écris '?mot', explique sa signification.
+- Si j'écris '??mot', explique sa grammaire.
 
-If I answer correctly, move on to the next word.
-
-IMPORTANT:
-- I might write words inside [square brackets] to flag words I don’t know. This is just for me—you should NEVER use square brackets yourself.
-- If I type `?word`, explain the meaning or usage of that word.
-- If I type `??word`, explain grammar, conjugation, or nuances of that word.
-
-Focus purely on helping me practice these words effectively. Keep your questions short and clear.
+Garde un ton chaleureux et amical.
+Évite les longues réponses et sépare tes idées par des sauts de ligne pour que ce soit agréable à lire.
 """
+
+    memories = load_memories()
+    if memories:
+        intro_prompt += f"\n\nVoici ce que tu sais déjà sur moi :\n{memories}"
+
     messages = [
         {"role": "system", "content": "You are a helpful French tutor."},
         {"role": "user", "content": intro_prompt}
     ]
 
-    # Start conversation loop
     while True:
-        response = client.chat.completions.create(model="gpt-4o",
-        messages=messages)
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=messages
+        )
         reply = response.choices[0].message.content
-        print(f"\n{Fore.MAGENTA}Amie: {reply}{Style.RESET_ALL}")
+        amie_says(reply)
 
-        user_input = input("\nYou: ")
-        if user_input.lower().strip() in ('/exit', '/quit', '/save'):
-            print("Ending session.")
-            break
+        user_input = input("\nToi : ").strip()
 
-        # Detect bracketed words
+        if user_input.startswith('/'):
+            rating_prompt = f"""
+Évalue ma maîtrise de ces mots sur une échelle de 1 (faible) à 10 (excellente) :
+{vocab_text}
+"""
+            messages.append({"role": "user", "content": rating_prompt})
+
+            rating_response = client.chat.completions.create(
+                model="gpt-4o",
+                messages=messages
+            )
+
+            amie_says("Voici mon évaluation de ta maîtrise :")
+            amie_says(rating_response.choices[0].message.content)
+
+            for line in rating_response.choices[0].message.content.split('\n'):
+                for word in session_words:
+                    if word in line:
+                        numbers = re.findall(r'\d+', line)
+                        if numbers:
+                            rating = int(numbers[0])
+                            df.loc[df['Entry'] == word, 'Mastery Score'] = rating
+
+            save_vocab(df, VOCAB_CSV)
+            amie_says("Vocabulaire enregistré.")
+
+            messages.append({"role": "user", "content": "Peux-tu résumer cette session en deux phrases simples ?"})
+            summary_response = client.chat.completions.create(
+                model="gpt-4o",
+                messages=messages
+            )
+            summary = summary_response.choices[0].message.content
+            amie_says("Résumé sauvegardé :")
+            amie_says(summary)
+            save_memory(summary)
+            return user_input
+
         bracketed = re.findall(r'\[(.*?)\]', user_input)
         if bracketed:
-            print("Detected unknown words:", bracketed)
+            amie_says(f"Mots inconnus détectés : {', '.join(bracketed)}")
             for word in bracketed:
                 if word not in df['Entry'].values:
                     df.loc[len(df)] = {'Entry': word, 'Notes': '', 'Mastery Score': 0}
+            save_vocab(df, VOCAB_CSV)
 
         messages.append({"role": "assistant", "content": reply})
         messages.append({"role": "user", "content": user_input})
 
-    # Ask GPT to rate mastery
-    rating_prompt = f"""
-Based on our conversation, rate my mastery for these words on a scale from 1 (poor) to 10 (excellent).
-Give your rating for each word:
-{vocab_text}
+def run_general_chat():
+    memories = load_memories()
+    system_prompt = f"""
+Tu es Amie, une amie française très sympa et détendue. 
+Tu adores discuter comme dans une vraie conversation, de façon simple et spontanée. 
+Parle toujours en français. Garde des réponses courtes et naturelles, évite les longs pavés.
+Sépare tes idées par des sauts de ligne si nécessaire pour que ce soit agréable à lire.
+Tu peux faire des pauses ou poser des questions séparément, comme dans un vrai échange amical.
+Discute de sujets actuels, de la vie quotidienne, de culture et de sujets amusants.
+Pose des questions pour faire avancer la conversation, comme une vraie amie curieuse.
 """
-    messages.append({"role": "user", "content": rating_prompt})
 
-    rating_response = client.chat.completions.create(model="gpt-4o",
-    messages=messages)
+    if memories:
+        system_prompt += f"\n\nVoici ce que tu sais déjà sur moi :\n{memories}"
 
-    print("\nAmie's Assessment:")
-    print(rating_response.choices[0].message.content)
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": "Commence la conversation en parlant de quelque chose de drôle ou d'intéressant."}
+    ]
 
-    # Extract ratings from GPT response
-    for line in rating_response.choices[0].message.content.split('\n'):
-        for word in session_words:
-            if word in line:
-                numbers = re.findall(r'\d+', line)
-                if numbers:
-                    rating = int(numbers[0])
-                    df.loc[df['Entry'] == word, 'Mastery Score'] = rating
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        messages=messages
+    )
+    reply = response.choices[0].message.content
+    amie_says(reply)
 
-    save_vocab(df, VOCAB_CSV)
-    print("\nVocab saved.")
+    while True:
+        user_input = input("\nToi : ").strip()
+
+        if user_input.startswith('/'):
+            messages.append({"role": "user", "content": "Peux-tu résumer cette session en deux phrases simples ?"})
+            summary_response = client.chat.completions.create(
+                model="gpt-4o",
+                messages=messages
+            )
+            summary = summary_response.choices[0].message.content
+            amie_says("Résumé sauvegardé :")
+            amie_says(summary)
+            save_memory(summary)
+            return user_input
+
+        messages.append({"role": "user", "content": user_input})
+
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=messages
+        )
+        reply = response.choices[0].message.content
+        amie_says(reply)
+        messages.append({"role": "assistant", "content": reply})
+
+def run_chat():
+    amie_says("Salut ! C'est moi, Amie ! On discute ?")
+
+    current_mode = 'chat'
+
+    while True:
+        if current_mode == 'chat':
+            returned_command = run_general_chat()
+        elif current_mode == 'vocab':
+            returned_command = run_vocab_chat()
+        else:
+            amie_says("Mode inconnu.")
+            run_general_chat()
+
+        if returned_command:
+            command = returned_command.lower()
+
+            if command in ('/exit', '/quit', '/done', '/qq'):
+                amie_says("À bientôt !")
+                break
+            elif command in ('/vocab', '/vocabulaire', '/v'):
+                current_mode = 'vocab'
+                amie_says("Passage en mode vocabulaire.")
+            elif command in ('/chat', '/discussion', '/c'):
+                current_mode = 'chat'
+                amie_says("Retour en mode chat.")
+            else:
+                amie_says("Commande inconnue.")
 
 ###########
 # Run it! #
 ###########
 
 if __name__ == '__main__':
-    df = load_vocab(VOCAB_CSV)
-    run_vocab_chat(df)
-
+    run_chat()
